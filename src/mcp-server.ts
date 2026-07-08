@@ -12,23 +12,27 @@ const server = new McpServer({
 
 server.tool(
   "contextpilot_index",
-  "Scans a project directory and builds/updates the function index. Run this before searching a new project, or after significant code changes.",
+  "Scans a project directory and builds/updates the function index. Run this before searching a new project, or after significant code changes. If projectPath is omitted, uses the current working directory.",
   {
     projectPath: z
       .string()
-      .describe("Absolute path to the project root directory"),
+      .optional()
+      .describe(
+        "Absolute path to the project root directory. Omit to use the current working directory.",
+      ),
     force: z
       .boolean()
       .optional()
       .describe("Force full re-index even if files are unchanged"),
   },
   async ({ projectPath, force }) => {
-    const stats = await indexProject(projectPath, { force });
+    const dir = projectPath ?? process.cwd();
+    const stats = await indexProject(dir, { force });
     return {
       content: [
         {
           type: "text",
-          text: `Indexed ${stats.filesScanned} files, ${stats.functionsIndexed} functions total.`,
+          text: `Indexed "${dir}": ${stats.filesScanned} files, ${stats.functionsIndexed} functions total.`,
         },
       ],
     };
@@ -37,12 +41,13 @@ server.tool(
 
 server.tool(
   "contextpilot_search",
-  "Finds the most relevant functions in an indexed project for a given task description. Use this before diving into a codebase to find where to make a change.",
+  "Finds the most relevant functions in an indexed project for a given task description. Use this before diving into a codebase to find where to make a change. If projectPath is omitted, uses the current working directory.",
   {
     projectPath: z
       .string()
+      .optional()
       .describe(
-        "Absolute path to the project root directory (must be already indexed)",
+        "Absolute path to the project root directory (must be already indexed). Omit to use the current working directory.",
       ),
     query: z
       .string()
@@ -55,13 +60,14 @@ server.tool(
       .describe("Number of results to return (default 5)"),
   },
   async ({ projectPath, query, topK }) => {
-    const results = await search(projectPath, query, topK ?? 5);
+    const dir = projectPath ?? process.cwd();
+    const results = await search(dir, query, topK ?? 5);
     if (results.length === 0) {
       return {
         content: [
           {
             type: "text",
-            text: `No matches found for "${query}". Has this project been indexed?`,
+            text: `No matches found for "${query}" in "${dir}". Has this project been indexed?`,
           },
         ],
       };
@@ -78,12 +84,13 @@ server.tool(
 
 server.tool(
   "contextpilot_context",
-  "Builds a single pasteable context blob containing the full source of the top matching functions for a task. Use this to get actual code, not just a list.",
+  "Builds a single pasteable context blob containing the full source of the top matching functions for a task. Use this to get actual code, not just a list. If projectPath is omitted, uses the current working directory.",
   {
     projectPath: z
       .string()
+      .optional()
       .describe(
-        "Absolute path to the project root directory (must be already indexed)",
+        "Absolute path to the project root directory (must be already indexed). Omit to use the current working directory.",
       ),
     query: z.string().describe("Natural language description of the task"),
     topK: z
@@ -92,7 +99,8 @@ server.tool(
       .describe("Number of functions to include (default 6)"),
   },
   async ({ projectPath, query, topK }) => {
-    const blob = await buildContext(projectPath, query, topK ?? 6);
+    const dir = projectPath ?? process.cwd();
+    const blob = await buildContext(dir, query, topK ?? 6);
     return { content: [{ type: "text", text: blob }] };
   },
 );
