@@ -1,0 +1,29 @@
+{
+  "name": "contextpilot",
+  "version": "0.1.0",
+  "description": "Intelligent Context Manager for Claude Code — finds the most relevant functions/files for a task before Claude has to search itself.",
+  "main": "dist/cli.js",
+  "type": "commonjs",
+  "bin": {
+    "contextpilot": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "start": "node dist/cli.js",
+    "dev": "ts-node src/cli.ts",
+    "test": "node --test dist/test/*.test.js"
+  },
+  "dependencies": {
+    "@xenova/transformers": "^2.17.2",
+    "commander": "^12.1.0",
+    "fast-glob": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.2"
+  }
+}
