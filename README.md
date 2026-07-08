@@ -1,119 +1,93 @@
 # ContextPilot
 
-**Intelligent Context Manager for Claude Code.**
+**Intelligent context manager for Claude Code and other MCP-compatible AI agents.**
 
-ContextPilot doesn't change how Claude thinks — it changes what Claude sees first.
-Instead of Claude Code grepping and re-reading dozens of files to find the code
-relevant to a task, ContextPilot maintains a pre-built index of every function in
-your project and returns only the handful that actually matter.
-
-> We're not modifying Claude. We're giving Claude better context.
+ContextPilot indexes a codebase once, then answers questions like _"which functions are relevant to this task?"_ — instantly, and without dumping your entire repo into the model's context window.
 
 ## The problem
 
-A developer working in an 800-file, 200k-line codebase types:
+When you ask an AI coding agent to "fix the login bug," it has to search your codebase somehow. Naive keyword search finds `Login()` and `LoginForm()` easily — but misses `verifyPassword()`, `createJWT()`, or `isLoggedIn()`, because those functions don't share the word "login" even though they're exactly where the bug probably lives.
+
+**Before (keyword-only search):**
 
 ```
-Fix login bug
+$ contextpilot search "Fix login bug"
+Login()          — score: 0.99
+Login()          — score: 0.99
+LoginForm()      — score: 0.99
 ```
 
-Claude Code has to search the whole tree to figure out what "login" even means in
-this project — which burns both time and context budget before any real work starts.
+Three login _pages_. Zero auth _logic_.
 
-## Status: v0.1 (Milestone 1)
+**After (hybrid semantic + keyword search):**
 
-This milestone intentionally uses **no AI and no heavy native dependencies**. The
-goal is a small, correct, fast foundation:
+```
+$ contextpilot search "user cannot stay logged in after refresh"
+isLoggedIn()       — score: 0.32
+getServerUser()    — score: 0.30
+```
 
-- ✅ Scan a project for JS/TS/JSX/TSX source files
-- ✅ Extract functions, arrow functions, and class methods (regex + brace-depth
-  parsing — see `src/parser.ts` for why this was chosen over tree-sitter for now)
-- ✅ Store them in SQLite (via Node's built-in `node:sqlite` — zero native
-  compilation required, see below)
-- ✅ `contextpilot index` — incremental: unchanged files are skipped via mtime/size
-- ✅ `contextpilot search "<query>"` — keyword/token-overlap ranking
-- ✅ `contextpilot context "<query>"` — concatenates top matches into one pasteable
-  blob
+No shared keywords at all between the query and the results — the match is purely semantic, found via embeddings.
 
-### Why `node:sqlite` instead of `better-sqlite3`
+## How it works
 
-`better-sqlite3` requires a native build step (`node-gyp`), which is a real source
-of install friction for a CLI tool meant to run on arbitrary machines and CI
-runners. Node 22.5+ ships an experimental built-in SQLite module
-(`node:sqlite`) that needs no compilation at all. We traded "most mature SQLite
-binding" for "installs cleanly everywhere" — worth revisiting once the built-in
-module stabilizes out of experimental, or if we need features it doesn't have yet.
+1. **Index** — ContextPilot scans your project, parses functions/methods (regex + brace-depth based), and stores them in a local SQLite database along with a semantic embedding of each function (`all-MiniLM-L6-v2`, run fully locally via `@xenova/transformers` — no API key, no data leaves your machine).
+2. **Search** — a query like `"fix login bug"` is embedded and compared against every indexed function using cosine similarity, blended with keyword-overlap scoring for precision on exact name matches.
+3. **Context** — the top matches can be pulled as a single pasteable blob of real source code, ready to hand to an LLM.
+4. Incremental by default — re-indexing an 800-file project after touching one file stays fast, since unchanged files are skipped via mtime/size checks.
 
-### Known limitations of the v0.1 parser
-
-- Brace-depth counting can, in rare cases, be thrown off by braces inside string
-  or template literals.
-- Single-expression arrow functions without a `{ }` body are recorded as
-  single-line entries.
-- No semantic understanding — see "Known limitation" below.
-
-### Known limitation of v0.1 search (the important one)
-
-Keyword-overlap search finds `AuthService.login()` for the query `"Fix login
-bug"` because the word "login" literally appears in the function name. It will
-**not** find `verifyPassword()` or `createJWT()`, even though a human reviewing
-a login bug would obviously want to see them too — there's no shared vocabulary
-between the query and those names/bodies. Closing that gap with embeddings is
-the explicit goal of the next milestone, not an oversight in this one.
-
-## Install & try it
+## Installation
 
 ```bash
-npm install
-npm run build
-
-node dist/cli.js index --dir /path/to/your/project
-node dist/cli.js search "fix login bug" --dir /path/to/your/project
-node dist/cli.js context "fix login bug" --dir /path/to/your/project --top 3
+npm install -g contextpilot
 ```
 
-The index is stored at `<project>/.contextpilot/index.sqlite` — safe to add to
-`.gitignore`.
+## CLI usage
 
-## Roadmap
-
-| Milestone | Scope |
-|---|---|
-| **v0.1** (this repo) | Scan → parse (regex) → SQLite → `index` / `search` / `context` CLI commands |
-| **v0.2** | Embeddings-based ranking (local model or API) so semantically-related but lexically-different functions are found; swap regex parser for tree-sitter |
-| **v0.3** | MCP server: Claude Code calls ContextPilot directly as a tool, no CLI step from the user |
-| **v1.0** | Multi-language support, call-graph aware ranking (boost functions that call/are called by top matches), publish to the MCP Registry |
-
-## Architecture
-
-```
-             User
-               │
-               ▼
-         Claude Code
-               │
-        MCP Request  (v0.3+)
-               │
-               ▼
-        ContextPilot
-               │
- ┌─────────────┼──────────────┐
- │             │              │
- ▼             ▼              ▼
-Index       Search         Ranking
- │
- ▼
-Context Builder
- │
- ▼
-Claude
+```bash
+contextpilot index /path/to/project
+contextpilot search "fix login bug" -d /path/to/project
+contextpilot context "fix login bug" -d /path/to/project   # full source code of top matches
 ```
 
-## Tech stack
+## Using it as an MCP server
 
-- TypeScript / Node.js
-- `node:sqlite` (built-in) for the index
-- `fast-glob` for project scanning
-- `commander` for the CLI
-- Regex + brace-depth parsing today; tree-sitter planned for v0.2
-- Embeddings (local or API) planned for v0.2 ranking
+ContextPilot ships as a Model Context Protocol server, so any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can call it as a tool during a conversation — no manual copy-pasting of code into the chat.
+
+**Claude Desktop** — add to your config (Settings → Developer → Edit Config):
+
+```json
+{
+  "mcpServers": {
+    "contextpilot": {
+      "command": "npx",
+      "args": ["-y", "contextpilot-mcp"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop. In a new chat, ask something like:
+
+> "Index /path/to/my-project, then find the functions most relevant to fixing the login bug."
+
+Claude will call `contextpilot_index` and `contextpilot_search` automatically.
+
+### Available tools
+
+| Tool                   | Description                                                 |
+| ---------------------- | ----------------------------------------------------------- |
+| `contextpilot_index`   | Scans a project and builds/updates the function index       |
+| `contextpilot_search`  | Returns ranked function matches for a task description      |
+| `contextpilot_context` | Returns full source code of the top matches, ready to paste |
+
+All three tools accept an optional `projectPath`. If omitted, ContextPilot falls back to the MCP server's current working directory.
+
+- **Claude Code** — since it's typically launched from inside your project directory (`cd my-project && claude`), the working directory usually _is_ your project, so you can often skip `projectPath` entirely and just say "index this project" or "find the functions relevant to X."
+- **Claude Desktop** — the MCP server is started from an unrelated working directory, not your project folder. Always pass `projectPath` explicitly here, e.g. "index /Users/you/projects/my-app, then search for X."
+
+When in doubt, just pass `projectPath` explicitly — it always works regardless of client.
+
+## License
+
+MIT
