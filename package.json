@@ -6,7 +6,7 @@
   "type": "commonjs",
   "bin": {
     "contextpilot": "./dist/cli.js",
-    "contextpilot-mcp": "./dist/mcp-server.js"
+    "contextpilotmcp": "./dist/mcp-server.js"
   },
   "engines": {
     "node": ">=22.5.0"
