@@ -1,6 +1,6 @@
 {
   "name": "contextpilotmcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Intelligent Context Manager for Claude Code — finds the most relevant functions/files for a task before Claude has to search itself.",
   "main": "dist/cli.js",
   "type": "commonjs",
