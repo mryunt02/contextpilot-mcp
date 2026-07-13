@@ -54,6 +54,52 @@ interface OpenBlock {
   braceDepthAtOpen: number;
 }
 
+export interface CallReference {
+  name: string;
+  receiver?: string;
+}
+
+const CALL_EXPRESSION =
+  /(?:\b([A-Za-z_$][\w$]*)\s*\.\s*)?\b([A-Za-z_$][\w$]*)\s*\(/g;
+const NON_CALL_IDENTIFIERS = new Set([
+  "if",
+  "for",
+  "while",
+  "switch",
+  "catch",
+  "function",
+  "return",
+  "new",
+  "typeof",
+  "delete",
+  "void",
+  "await",
+  "import",
+  "require",
+]);
+
+/**
+ * Extracts call sites from a function body. Resolution is intentionally done
+ * by the indexer, where all indexed functions (including other files) exist.
+ */
+export function extractCallReferences(code: string): CallReference[] {
+  const calls = new Map<string, CallReference>();
+  for (const match of code.matchAll(CALL_EXPRESSION)) {
+    const receiver = match[1];
+    const name = match[2];
+    if (NON_CALL_IDENTIFIERS.has(name)) continue;
+    const prefix = code.slice(
+      Math.max(0, (match.index ?? 0) - 20),
+      match.index,
+    );
+    if (/\bfunction\s*$/.test(prefix)) continue;
+
+    const key = `${receiver ?? ""}:${name}`;
+    calls.set(key, { name, receiver });
+  }
+  return [...calls.values()];
+}
+
 export function extractFunctions(
   filePath: string,
   content: string,

@@ -1,4 +1,4 @@
-import { openDb, getAllFunctions } from "./db";
+import { getAllFunctions, getCallEdges, openDb } from "./db";
 import { FunctionInfo, SearchResult } from "./types";
 import { embedText, cosineSimilarity } from "./embeddings";
 
@@ -76,13 +76,20 @@ function scoreFunction(queryTokens: string[], fn: FunctionInfo): number {
   return Math.min(0.99, score / maxPossible);
 }
 
+export interface SearchOptions {
+  expandDependencies?: boolean;
+  expansionDepth?: number;
+}
+
 export async function search(
   rootDir: string,
   query: string,
   topK = 5,
+  options: SearchOptions = {},
 ): Promise<SearchResult[]> {
   const db = openDb(rootDir);
   const allFunctions = getAllFunctions(db);
+  const callEdges = options.expandDependencies ? getCallEdges(db) : [];
   db.close();
 
   const queryTokens = tokenize(query);
@@ -97,6 +104,7 @@ export async function search(
       const finalScore = 0.6 * semanticScore + 0.4 * keywordScore;
 
       return {
+        id: fn.id,
         name: fn.name,
         filePath: fn.filePath,
         startLine: fn.startLine,
@@ -108,5 +116,54 @@ export async function search(
     .filter((r) => r.score > 0.1)
     .sort((a, b) => b.score - a.score);
 
-  return scored.slice(0, topK);
+  const matches = scored.slice(0, topK);
+  if (!options.expandDependencies || matches.length === 0) {
+    return matches.map(({ id: _id, ...result }) => result);
+  }
+
+  const maxDepth = Math.max(1, Math.floor(options.expansionDepth ?? 1));
+  const byId = new Map(allFunctions.flatMap((fn) => fn.id === undefined ? [] : [[fn.id, fn]] as const));
+  const outgoing = new Map<number, number[]>();
+  const incoming = new Map<number, number[]>();
+  for (const { callerId, calleeId } of callEdges) {
+    (outgoing.get(callerId) ?? outgoing.set(callerId, []).get(callerId)!).push(calleeId);
+    (incoming.get(calleeId) ?? incoming.set(calleeId, []).get(calleeId)!).push(callerId);
+  }
+
+  const resultById = new Map<number, SearchResult>();
+  const queue: Array<{ id: number; depth: number }> = [];
+  for (const match of matches) {
+    if (match.id === undefined) continue;
+    const { id, ...result } = match;
+    resultById.set(id, result);
+    queue.push({ id, depth: 0 });
+  }
+
+  for (let index = 0; index < queue.length; index++) {
+    const { id, depth } = queue[index];
+    if (depth >= maxDepth) continue;
+    for (const [neighborId, relationship] of [
+      ...(outgoing.get(id) ?? []).map((calleeId) => [calleeId, "calls"] as const),
+      ...(incoming.get(id) ?? []).map((callerId) => [callerId, "called-by"] as const),
+    ]) {
+      if (resultById.has(neighborId)) continue;
+      const fn = byId.get(neighborId);
+      if (!fn) continue;
+      resultById.set(neighborId, {
+        name: fn.name,
+        filePath: fn.filePath,
+        startLine: fn.startLine,
+        endLine: fn.endLine,
+        className: fn.className,
+        score: 0,
+        relationship,
+        expansionDepth: depth + 1,
+      });
+      queue.push({ id: neighborId, depth: depth + 1 });
+    }
+  }
+
+  // Preserve ranked matches first, then breadth-first dependencies, which is
+  // both useful to agents and keeps the context deterministic.
+  return [...resultById.values()];
 }

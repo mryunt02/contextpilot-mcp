@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { extractFunctions } from "../parser";
+import { extractCallReferences, extractFunctions } from "../parser";
 
 test("extracts a plain function declaration", () => {
   const code = `function login(user) {\n  return user;\n}\n`;
@@ -40,4 +40,13 @@ test("returns correct start/end line numbers", () => {
   const b = fns.find((f) => f.name === "b")!;
   assert.deepEqual([a.startLine, a.endLine], [1, 3]);
   assert.deepEqual([b.startLine, b.endLine], [5, 7]);
+});
+
+test("extracts unqualified and qualified function calls", () => {
+  const calls = extractCallReferences(`function login() {\n  verifyPassword();\n  this.createJWT();\n  UserRepository.findByEmail();\n}`);
+  assert.deepEqual(calls, [
+    { name: "verifyPassword", receiver: undefined },
+    { name: "createJWT", receiver: "this" },
+    { name: "findByEmail", receiver: "UserRepository" },
+  ]);
 });

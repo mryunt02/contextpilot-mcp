@@ -59,10 +59,23 @@ server.tool(
       .number()
       .optional()
       .describe("Number of results to return (default 5)"),
+    expandDependencies: z
+      .boolean()
+      .optional()
+      .describe("Include called functions and callers from the call graph (default false)"),
+    expansionDepth: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Maximum call graph expansion depth (default 1)"),
   },
-  async ({ projectPath, query, topK }) => {
+  async ({ projectPath, query, topK, expandDependencies, expansionDepth }) => {
     const dir = projectPath ?? process.cwd();
-    const results = await search(dir, query, topK ?? 5);
+    const results = await search(dir, query, topK ?? 5, {
+      expandDependencies,
+      expansionDepth,
+    });
     if (results.length === 0) {
       return {
         content: [
@@ -76,7 +89,7 @@ server.tool(
     const summary = results
       .map(
         (r) =>
-          `${r.className ? r.className + "." : ""}${r.name}() — ${r.filePath}:${r.startLine} (score: ${r.score.toFixed(2)})`,
+          `${r.className ? r.className + "." : ""}${r.name}() — ${r.filePath}:${r.startLine} ${r.relationship ? `(${r.relationship}, depth ${r.expansionDepth})` : `(score: ${r.score.toFixed(2)})`}`,
       )
       .join("\n");
     return { content: [{ type: "text", text: summary }] };
@@ -98,10 +111,23 @@ server.tool(
       .number()
       .optional()
       .describe("Number of functions to include (default 6)"),
+    expandDependencies: z
+      .boolean()
+      .optional()
+      .describe("Include called functions and callers from the call graph (default false)"),
+    expansionDepth: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Maximum call graph expansion depth (default 1)"),
   },
-  async ({ projectPath, query, topK }) => {
+  async ({ projectPath, query, topK, expandDependencies, expansionDepth }) => {
     const dir = projectPath ?? process.cwd();
-    const blob = await buildContext(dir, query, topK ?? 6);
+    const blob = await buildContext(dir, query, topK ?? 6, {
+      expandDependencies,
+      expansionDepth,
+    });
     return { content: [{ type: "text", text: blob }] };
   },
 );

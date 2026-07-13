@@ -33,10 +33,15 @@ program
   .description("Find the most relevant functions for a task description")
   .option("-d, --dir <path>", "project root directory", ".")
   .option("-k, --top <n>", "number of results", "5")
+  .option("--expand", "include direct call dependencies and callers", false)
+  .option("--depth <n>", "call graph expansion depth (default 1)", "1")
   .action(async (queryParts, opts) => {
     const rootDir = path.resolve(opts.dir);
     const query = queryParts.join(" ");
-    const results = await search(rootDir, query, parseInt(opts.top, 10));
+    const results = await search(rootDir, query, parseInt(opts.top, 10), {
+      expandDependencies: opts.expand,
+      expansionDepth: parseInt(opts.depth, 10),
+    });
 
     if (results.length === 0) {
       console.log(
@@ -49,7 +54,9 @@ program
       const label = r.className ? `${r.className}.${r.name}()` : `${r.name}()`;
       console.log(label);
       console.log(r.filePath + `:${r.startLine}-${r.endLine}`);
-      console.log(`Score: ${r.score.toFixed(2)}`);
+      console.log(r.relationship
+        ? `Relationship: ${r.relationship} (depth ${r.expansionDepth})`
+        : `Score: ${r.score.toFixed(2)}`);
       if (i < results.length - 1) console.log("-".repeat(20));
     });
   });
@@ -59,10 +66,15 @@ program
   .description("Build a single pasteable context blob from the top matches")
   .option("-d, --dir <path>", "project root directory", ".")
   .option("-k, --top <n>", "number of functions to include", "6")
-  .action((queryParts, opts) => {
+  .option("--expand", "include direct call dependencies and callers", false)
+  .option("--depth <n>", "call graph expansion depth (default 1)", "1")
+  .action(async (queryParts, opts) => {
     const rootDir = path.resolve(opts.dir);
     const query = queryParts.join(" ");
-    const blob = buildContext(rootDir, query, parseInt(opts.top, 10));
+    const blob = await buildContext(rootDir, query, parseInt(opts.top, 10), {
+      expandDependencies: opts.expand,
+      expansionDepth: parseInt(opts.depth, 10),
+    });
     console.log(blob);
   });
 

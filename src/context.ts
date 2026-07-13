@@ -1,12 +1,14 @@
 import { openDb, getAllFunctions } from "./db";
 import { search } from "./search";
 import { FunctionInfo } from "./types";
+import { SearchOptions } from "./search";
 export async function buildContext(
   rootDir: string,
   query: string,
   topK = 6,
+  options: SearchOptions = {},
 ): Promise<string> {
-  const results = await search(rootDir, query, topK);
+  const results = await search(rootDir, query, topK, options);
   if (results.length === 0) {
     return `// No relevant functions found for query: "${query}"\n// Try \`contextpilot index\` first, or rephrase the query.`;
   }
@@ -14,10 +16,6 @@ export async function buildContext(
   const db = openDb(rootDir);
   const all = getAllFunctions(db);
   db.close();
-
-  const byKey = new Map<string, FunctionInfo>();
-  for (const fn of all)
-    byKey.set(`${fn.filePath}:${fn.name}:${fn.startLine}`, fn);
 
   const chunks: string[] = [];
   for (const r of results) {
@@ -31,9 +29,10 @@ export async function buildContext(
     const label = match.className
       ? `${match.className}.${match.name}()`
       : `${match.name}()`;
-    chunks.push(
-      `// ${label}\n// ${match.filePath}:${match.startLine}-${match.endLine} (score: ${r.score.toFixed(2)})\n${match.code}`,
-    );
+    const provenance = r.relationship
+      ? ` (${r.relationship}, depth ${r.expansionDepth})`
+      : ` (score: ${r.score.toFixed(2)})`;
+    chunks.push(`// ${label}\n// ${match.filePath}:${match.startLine}-${match.endLine}${provenance}\n${match.code}`);
   }
 
   return chunks.join("\n\n// " + "-".repeat(40) + "\n\n");

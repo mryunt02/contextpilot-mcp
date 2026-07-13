@@ -10,6 +10,7 @@ import {
   insertFunctions,
   countFiles,
   countFunctions,
+  rebuildCallGraph,
 } from "./db";
 import { IndexStats } from "./types";
 
@@ -50,6 +51,7 @@ export async function indexProject(
     filesScanned++;
     functionsIndexed += functions.length;
   }
+  rebuildCallGraph(db);
 
   const stats: IndexStats = {
     filesScanned: opts.force ? files.length : filesScanned,

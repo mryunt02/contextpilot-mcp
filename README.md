@@ -24,7 +24,8 @@ That's the entire repository's worth of context reduced by over **99.7%** — wh
 
 1. **Index** — ContextPilot scans your project, parses functions/methods (regex + brace-depth based), and stores them in a local SQLite database along with a semantic embedding of each function (`all-MiniLM-L6-v2`, run fully locally via `@xenova/transformers` — no API key, no data leaves your machine).
 2. **Search** — a query like `"fix login bug"` is embedded and compared against every indexed function using cosine similarity, blended with keyword-overlap scoring for precision on exact name matches.
-3. **Context** — the top matches are returned as a single pasteable blob of real source code, sized to fit a task, not a whole repo.
+3. **Call graph** — while indexing, ContextPilot records caller → callee relationships. Retrieval can add direct callers and callees (or more hops) only when requested.
+4. **Context** — the top matches are returned as a single pasteable blob of real source code, sized to fit a task, not a whole repo.
 4. Incremental by default — re-indexing an 800-file project after touching one file stays fast, since unchanged files are skipped via mtime/size checks.
 
 ## Installation
@@ -39,7 +40,12 @@ npm install -g contextpilotmcp
 contextpilot index /path/to/project
 contextpilot search "fix login bug" -d /path/to/project
 contextpilot context "fix login bug" -d /path/to/project   # full source code of top matches
+contextpilot context "fix login bug" -d /path/to/project --expand --depth 2
 ```
+
+`--expand` includes both functions called by each top match and functions that
+call it. `--depth` controls the maximum number of call-graph hops (default: 1).
+Expansion is opt-in so normal searches stay as small as possible.
 
 ## Using it as an MCP server
 
@@ -69,10 +75,11 @@ Claude will call `contextpilot_index` and `contextpilot_search` automatically.
 | Tool | Description |
 |---|---|
 | `contextpilot_index` | Scans a project and builds/updates the function index |
-| `contextpilot_search` | Returns ranked function matches for a task description |
-| `contextpilot_context` | Returns full source code of the top matches, ready to paste |
+| `contextpilot_search` | Returns ranked function matches, optionally with call dependencies |
+| `contextpilot_context` | Returns full source code of the top matches, optionally with call dependencies |
 
 All three tools accept an optional `projectPath`. If omitted, ContextPilot falls back to the MCP server's current working directory.
+`contextpilot_search` and `contextpilot_context` also accept `expandDependencies: true` and an optional `expansionDepth` (default `1`).
 
 - **Claude Code** — since it's typically launched from inside your project directory (`cd my-project && claude`), the working directory usually *is* your project, so you can often skip `projectPath` entirely and just say "index this project" or "find the functions relevant to X."
 - **Claude Desktop** — the MCP server is started from an unrelated working directory, not your project folder. Always pass `projectPath` explicitly here, e.g. "index /Users/you/projects/my-app, then search for X."
