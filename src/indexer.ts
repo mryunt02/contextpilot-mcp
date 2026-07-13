@@ -10,6 +10,7 @@ import {
   insertFunctions,
   countFiles,
   countFunctions,
+  hasFunctionsWithoutSourceRanges,
   rebuildCallGraph,
 } from "./db";
 import { IndexStats } from "./types";
@@ -20,6 +21,7 @@ export async function indexProject(
 ): Promise<IndexStats> {
   const db = openDb(rootDir);
   const files = await scanProject(rootDir);
+  const requiresSourceRangeMigration = hasFunctionsWithoutSourceRanges(db);
 
   let filesScanned = 0;
   let functionsIndexed = 0;
@@ -33,6 +35,7 @@ export async function indexProject(
     const existing = getFileMeta(db, relPath);
     const unchanged =
       !opts.force &&
+      !requiresSourceRangeMigration &&
       existing &&
       existing.mtimeMs === mtimeMs &&
       existing.size === size;

@@ -1,189 +1,147 @@
+import ts from "typescript";
+import path from "node:path";
 import { FunctionInfo } from "./types";
-
-/**
- * v0.1 function extractor.
- *
- * Deliberately NOT using a full AST parser (tree-sitter/babel) yet —
- * per the milestone-1 goal ("no AI, no heavy deps, just something that
- * works"). This uses line-scanning + brace-depth counting, which covers
- * the large majority of real-world function/method declarations in
- * JS/TS codebases:
- *
- *   function foo(...) { ... }
- *   async function foo(...) { ... }
- *   export function foo(...) { ... }
- *   const foo = (...) => { ... }
- *   const foo = async (...) => { ... }
- *   export const foo = (...) => { ... }
- *   class Foo { bar(...) { ... } }
- *
- * Known limitations (documented on purpose, not hidden):
- *  - Braces inside string/template literals or comments can throw off
- *    depth-counting in rare cases.
- *  - One-liner arrow functions without a `{ }` body (`const f = x => x*2`)
- *    are recorded as single-line entries.
- *  - Overloaded/ambient declarations are skipped.
- *
- * This is the file to replace with a tree-sitter-based parser in v0.2
- * without changing the FunctionInfo contract used by the rest of the app.
- */
-
-const FUNCTION_DECL =
-  /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s+([A-Za-z_$][\w$]*)\s*\(/;
-const ARROW_CONST =
-  /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::\s*[^=]+)?=\s*(?:async\s*)?\(?[^=]*\)?\s*=>/;
-const CLASS_DECL =
-  /^\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/;
-const METHOD_DECL =
-  /^\s*(?:(?:public|private|protected|static|async|readonly)\s+)*\*?\s*([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*(?::\s*[^{]+)?\{/;
-const CONTROL_KEYWORDS = new Set([
-  "if",
-  "for",
-  "while",
-  "switch",
-  "catch",
-  "return",
-  "function",
-]);
-
-interface OpenBlock {
-  kind: FunctionInfo["kind"];
-  name: string;
-  startLine: number;
-  className?: string;
-  braceDepthAtOpen: number;
-}
 
 export interface CallReference {
   name: string;
   receiver?: string;
 }
 
-const CALL_EXPRESSION =
-  /(?:\b([A-Za-z_$][\w$]*)\s*\.\s*)?\b([A-Za-z_$][\w$]*)\s*\(/g;
-const NON_CALL_IDENTIFIERS = new Set([
-  "if",
-  "for",
-  "while",
-  "switch",
-  "catch",
-  "function",
-  "return",
-  "new",
-  "typeof",
-  "delete",
-  "void",
-  "await",
-  "import",
-  "require",
-]);
-
-/**
- * Extracts call sites from a function body. Resolution is intentionally done
- * by the indexer, where all indexed functions (including other files) exist.
- */
-export function extractCallReferences(code: string): CallReference[] {
-  const calls = new Map<string, CallReference>();
-  for (const match of code.matchAll(CALL_EXPRESSION)) {
-    const receiver = match[1];
-    const name = match[2];
-    if (NON_CALL_IDENTIFIERS.has(name)) continue;
-    const prefix = code.slice(
-      Math.max(0, (match.index ?? 0) - 20),
-      match.index,
-    );
-    if (/\bfunction\s*$/.test(prefix)) continue;
-
-    const key = `${receiver ?? ""}:${name}`;
-    calls.set(key, { name, receiver });
+function scriptKindFor(filePath: string): ts.ScriptKind {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".tsx": return ts.ScriptKind.TSX;
+    case ".jsx": return ts.ScriptKind.JSX;
+    case ".js":
+    case ".mjs":
+    case ".cjs": return ts.ScriptKind.JS;
+    default: return ts.ScriptKind.TS;
   }
-  return [...calls.values()];
 }
 
-export function extractFunctions(
-  filePath: string,
-  content: string,
-): FunctionInfo[] {
-  const lines = content.split("\n");
+function sourceFile(filePath: string, content: string): ts.SourceFile {
+  return ts.createSourceFile(
+    filePath,
+    content,
+    ts.ScriptTarget.Latest,
+    true,
+    scriptKindFor(filePath),
+  );
+}
+
+function propertyNameText(name: ts.PropertyName | undefined, file: ts.SourceFile): string | undefined {
+  if (!name) return undefined;
+  if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name)) return name.text;
+  if (ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
+  return name.getText(file);
+}
+
+function assignedName(node: ts.FunctionExpression | ts.ArrowFunction, file: ts.SourceFile): string | undefined {
+  const parent = node.parent;
+  if (ts.isVariableDeclaration(parent)) return propertyNameText(parent.name as ts.PropertyName, file);
+  if (ts.isPropertyAssignment(parent)) return propertyNameText(parent.name, file);
+  if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    return parent.left.getText(file);
+  }
+  if (ts.isExportAssignment(parent)) return "default";
+  return undefined;
+}
+
+function functionName(node: ts.FunctionLikeDeclaration, file: ts.SourceFile): string {
+  if (node.name && ts.isIdentifier(node.name)) return node.name.text;
+  if (ts.isFunctionExpression(node) || ts.isArrowFunction(node)) {
+    return assignedName(node, file) ?? "<anonymous>";
+  }
+  if (ts.isConstructorDeclaration(node)) return "constructor";
+  if (
+    ts.isFunctionDeclaration(node) &&
+    ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)
+  ) return "default";
+  if ("name" in node) return propertyNameText(node.name, file) ?? "<anonymous>";
+  return "<anonymous>";
+}
+
+function containingClassName(node: ts.Node, file: ts.SourceFile): string | undefined {
+  let current = node.parent;
+  while (current) {
+    if (ts.isClassDeclaration(current) || ts.isClassExpression(current)) {
+      return current.name?.text ?? "<anonymous class>";
+    }
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function functionKind(node: ts.FunctionLikeDeclaration): FunctionInfo["kind"] {
+  if (ts.isArrowFunction(node)) return "arrow";
+  if (ts.isMethodDeclaration(node) || ts.isConstructorDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) return "method";
+  return "function";
+}
+
+/**
+ * Extracts every executable function-like declaration using the TypeScript
+ * compiler AST. Unlike the previous line scanner, this follows the language
+ * grammar and preserves exact source offsets, including decorators/modifiers.
+ */
+export function extractFunctions(filePath: string, content: string): FunctionInfo[] {
+  const file = sourceFile(filePath, content);
   const results: FunctionInfo[] = [];
 
-  let braceDepth = 0;
-  let classStack: { name: string; depth: number }[] = [];
-  const openStack: OpenBlock[] = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const trimmed = line.trim();
-    const classMatch = CLASS_DECL.exec(line);
-    if (classMatch) {
-      classStack.push({ name: classMatch[1], depth: braceDepth });
-    }
-
-    let matched: { kind: FunctionInfo["kind"]; name: string } | null = null;
-
-    const fnMatch = FUNCTION_DECL.exec(line);
-    if (fnMatch) {
-      matched = { kind: "function", name: fnMatch[1] };
-    } else {
-      const arrowMatch = ARROW_CONST.exec(line);
-      if (arrowMatch && line.includes("=>")) {
-        matched = { kind: "arrow", name: arrowMatch[1] };
-      } else if (
-        classStack.length > 0 &&
-        classStack[classStack.length - 1].depth + 1 === braceDepth
-      ) {
-        const methodMatch = METHOD_DECL.exec(line);
-        if (
-          methodMatch &&
-          !CONTROL_KEYWORDS.has(methodMatch[1]) &&
-          line.includes("{")
-        ) {
-          matched = { kind: "method", name: methodMatch[1] };
-        }
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isFunctionDeclaration(node) ||
+      ts.isFunctionExpression(node) ||
+      ts.isArrowFunction(node) ||
+      ts.isMethodDeclaration(node) ||
+      ts.isConstructorDeclaration(node) ||
+      ts.isGetAccessorDeclaration(node) ||
+      ts.isSetAccessorDeclaration(node)
+    ) {
+      // Signatures and abstract methods have no implementation to provide as context.
+      if (node.body) {
+        const startOffset = node.getStart(file);
+        const endOffset = node.getEnd();
+        results.push({
+          name: functionName(node, file),
+          kind: functionKind(node),
+          filePath,
+          startLine: file.getLineAndCharacterOfPosition(startOffset).line + 1,
+          endLine: file.getLineAndCharacterOfPosition(Math.max(startOffset, endOffset - 1)).line + 1,
+          startOffset,
+          endOffset,
+          code: content.slice(startOffset, endOffset),
+          className: containingClassName(node, file),
+        });
       }
     }
+    ts.forEachChild(node, visit);
+  };
 
-    if (matched && line.includes("{")) {
-      openStack.push({
-        kind: matched.kind,
-        name: matched.name,
-        startLine: i + 1,
-        className:
-          classStack.length > 0
-            ? classStack[classStack.length - 1].name
-            : undefined,
-        braceDepthAtOpen: braceDepth,
-      });
-    }
-
-    for (const ch of line) {
-      if (ch === "{") braceDepth++;
-      else if (ch === "}") {
-        braceDepth--;
-        while (
-          openStack.length > 0 &&
-          openStack[openStack.length - 1].braceDepthAtOpen === braceDepth
-        ) {
-          const block = openStack.pop()!;
-          results.push({
-            name: block.name,
-            kind: block.kind,
-            filePath,
-            startLine: block.startLine,
-            endLine: i + 1,
-            code: lines.slice(block.startLine - 1, i + 1).join("\n"),
-            className: block.className,
-          });
-        }
-        while (
-          classStack.length > 0 &&
-          classStack[classStack.length - 1].depth === braceDepth
-        ) {
-          classStack.pop();
-        }
-      }
-    }
-  }
-
+  visit(file);
   return results;
+}
+
+/** Extract call sites via the AST so declarations, generics, and comments are never mistaken for calls. */
+export function extractCallReferences(code: string): CallReference[] {
+  const file = sourceFile("snippet.ts", code);
+  const calls = new Map<string, CallReference>();
+
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node)) {
+      let name: string | undefined;
+      let receiver: string | undefined;
+      if (ts.isIdentifier(node.expression)) {
+        name = node.expression.text;
+      } else if (ts.isPropertyAccessExpression(node.expression)) {
+        name = node.expression.name.text;
+        const expression = node.expression.expression;
+        if (expression.kind === ts.SyntaxKind.ThisKeyword) receiver = "this";
+        else if (ts.isIdentifier(expression)) receiver = expression.text;
+      }
+      if (name) calls.set(`${receiver ?? ""}:${name}`, { name, receiver });
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(file);
+  return [...calls.values()];
 }

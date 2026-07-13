@@ -22,7 +22,7 @@ That's the entire repository's worth of context reduced by over **99.7%** — wh
 
 ## How it works
 
-1. **Index** — ContextPilot scans your project, parses functions/methods (regex + brace-depth based), and stores them in a local SQLite database along with a semantic embedding of each function (`all-MiniLM-L6-v2`, run fully locally via `@xenova/transformers` — no API key, no data leaves your machine).
+1. **Index** — ContextPilot scans your project, parses JavaScript and TypeScript with the TypeScript Compiler API, and stores functions/methods with exact character ranges in a local SQLite database along with a semantic embedding of each function (`all-MiniLM-L6-v2`, run fully locally via `@xenova/transformers` — no API key, no data leaves your machine).
 2. **Search** — a query like `"fix login bug"` is embedded and compared against every indexed function using cosine similarity, blended with keyword-overlap scoring for precision on exact name matches.
 3. **Call graph** — while indexing, ContextPilot records caller → callee relationships. Retrieval can add direct callers and callees (or more hops) only when requested.
 4. **Context** — the top matches are returned as a single pasteable blob of real source code, sized to fit a task, not a whole repo.

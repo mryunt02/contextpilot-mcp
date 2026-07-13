@@ -5,6 +5,8 @@ export interface FunctionInfo {
   filePath: string;
   startLine: number;
   endLine: number;
+  startOffset: number;
+  endOffset: number;
   code: string;
   className?: string;
   embedding?: Float32Array;

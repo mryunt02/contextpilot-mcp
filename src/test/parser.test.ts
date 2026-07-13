@@ -50,3 +50,33 @@ test("extracts unqualified and qualified function calls", () => {
     { name: "findByEmail", receiver: "UserRepository" },
   ]);
 });
+
+test("uses the AST for modern TypeScript functions and exact source ranges", () => {
+  const code = `@service
+export default async function <T>(value: T): Promise<T> {
+  function nested() { return value; }
+  return nested();
+}
+
+class Worker {
+  @trace()
+  async run<T>(value: T) { return value; }
+}
+
+const handler = async function <T>(value: T) { return value; };
+const mapper = <T,>(value: T) => value;
+`;
+  const fns = extractFunctions("modern.ts", code);
+  const byName = (name: string) => fns.find((fn) => fn.name === name)!;
+
+  assert.deepEqual(fns.map((fn) => fn.name), ["default", "nested", "run", "handler", "mapper"]);
+  assert.equal(byName("run").className, "Worker");
+  assert.equal(byName("handler").kind, "function");
+  assert.equal(byName("mapper").kind, "arrow");
+  assert.equal(byName("default").startLine, 1);
+  assert.ok(byName("run").code.startsWith("@trace()"));
+  for (const fn of fns) {
+    assert.equal(fn.code, code.slice(fn.startOffset, fn.endOffset));
+    assert.ok(fn.endOffset > fn.startOffset);
+  }
+});

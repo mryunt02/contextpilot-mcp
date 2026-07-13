@@ -34,10 +34,19 @@ export function openDb(rootDir: string): DatabaseSync {
     file_path TEXT NOT NULL,
     start_line INTEGER NOT NULL,
     end_line INTEGER NOT NULL,
+    start_offset INTEGER NOT NULL,
+    end_offset INTEGER NOT NULL,
     code TEXT NOT NULL,
     embedding BLOB
   );
 `);
+  const columns = db.prepare(`PRAGMA table_info(functions)`).all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "start_offset")) {
+    db.exec(`ALTER TABLE functions ADD COLUMN start_offset INTEGER`);
+  }
+  if (!columns.some((column) => column.name === "end_offset")) {
+    db.exec(`ALTER TABLE functions ADD COLUMN end_offset INTEGER`);
+  }
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_functions_file_path ON functions(file_path);`,
   );
@@ -93,8 +102,8 @@ export async function insertFunctions(
   functions: FunctionInfo[],
 ) {
   const stmt = db.prepare(`
-    INSERT INTO functions (name, kind, class_name, file_path, start_line, end_line, code, embedding)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO functions (name, kind, class_name, file_path, start_line, end_line, start_offset, end_offset, code, embedding)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const withEmbeddings: Array<FunctionInfo & { embeddingBuf: Buffer }> = [];
   for (const fn of functions) {
@@ -113,6 +122,8 @@ export async function insertFunctions(
         fn.filePath,
         fn.startLine,
         fn.endLine,
+        fn.startOffset,
+        fn.endOffset,
         fn.code,
         fn.embeddingBuf,
       );
@@ -126,7 +137,7 @@ export async function insertFunctions(
 export function getAllFunctions(db: DatabaseSync): FunctionInfo[] {
   const rows = db
     .prepare(
-      `SELECT id, name, kind, class_name as className, file_path as filePath, start_line as startLine, end_line as endLine, code, embedding
+      `SELECT id, name, kind, class_name as className, file_path as filePath, start_line as startLine, end_line as endLine, start_offset as startOffset, end_offset as endOffset, code, embedding
        FROM functions`,
     )
     .all() as unknown as Array<FunctionInfo & { embedding: Buffer | null }>;
@@ -135,6 +146,13 @@ export function getAllFunctions(db: DatabaseSync): FunctionInfo[] {
     ...row,
     embedding: row.embedding ? bufferToEmbedding(row.embedding) : undefined,
   }));
+}
+
+export function hasFunctionsWithoutSourceRanges(db: DatabaseSync): boolean {
+  const row = db.prepare(
+    `SELECT EXISTS(SELECT 1 FROM functions WHERE start_offset IS NULL OR end_offset IS NULL) as missing`,
+  ).get() as { missing: number };
+  return row.missing === 1;
 }
 
 /** Rebuilds lightweight caller → callee edges after functions are indexed. */
