@@ -4,6 +4,8 @@ import path from "path";
 import { indexProject } from "./indexer";
 import { search } from "./search";
 import { buildContext } from "./context";
+import fs from "fs";
+import { formatBenchmarkReport, runBenchmark } from "./benchmark";
 
 const program = new Command();
 
@@ -76,6 +78,22 @@ program
       expansionDepth: parseInt(opts.depth, 10),
     });
     console.log(blob);
+  });
+
+program
+  .command("benchmark")
+  .description("Run the reproducible retrieval benchmark and write Markdown and JSON reports")
+  .option("-o, --output <path>", "Markdown report path", "contextpilot-benchmark-report.md")
+  .action(async (opts) => {
+    const markdownPath = path.resolve(opts.output);
+    const parsed = path.parse(markdownPath);
+    const jsonPath = path.join(parsed.dir, `${parsed.name}.json`);
+    const report = await runBenchmark();
+    fs.mkdirSync(parsed.dir, { recursive: true });
+    fs.writeFileSync(markdownPath, formatBenchmarkReport(report));
+    fs.writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`);
+    console.log(`✓ Benchmark complete: ${markdownPath}`);
+    console.log(`✓ Machine-readable results: ${jsonPath}`);
   });
 
 program.parse();

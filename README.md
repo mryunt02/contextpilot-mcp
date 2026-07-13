@@ -41,11 +41,16 @@ contextpilot index /path/to/project
 contextpilot search "fix login bug" -d /path/to/project
 contextpilot context "fix login bug" -d /path/to/project   # full source code of top matches
 contextpilot context "fix login bug" -d /path/to/project --expand --depth 2
+contextpilot benchmark                              # writes benchmark report files
 ```
 
 `--expand` includes both functions called by each top match and functions that
 call it. `--depth` controls the maximum number of call-graph hops (default: 1).
 Expansion is opt-in so normal searches stay as small as possible.
+
+### Benchmarking retrieval quality
+
+`contextpilot benchmark` runs a fixed, self-contained TypeScript corpus with labelled relevant functions. It writes `contextpilot-benchmark-report.md` and `.json` in the current directory, comparing Full Repository, Keyword Search, and Hybrid Search on indexing speed, retrieval latency, estimated token reduction, precision@3, and recall@3. Use `--output reports/benchmark.md` to choose the Markdown report path.
 
 ## Using it as an MCP server
 

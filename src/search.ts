@@ -2,20 +2,7 @@ import { getAllFunctions, getCallEdges, openDb } from "./db";
 import { FunctionInfo, SearchResult } from "./types";
 import { embedText, cosineSimilarity } from "./embeddings";
 
-/**
- * v0.1 ranking: no embeddings yet (that's the "next stage" in the plan).
- * Instead we do weighted token overlap between the query and:
- *   - the function/method name (split on camelCase/snake_case) — heaviest weight
- *   - the class name
- *   - the function body text
- *
- * This already handles cases like "Fix login bug" -> AuthService.login()
- * reasonably well, because splitting identifiers into tokens turns
- * `login` into a direct hit against the query token `login`.
- * It will NOT handle purely semantic matches like
- * "Authentication fails after refresh" -> verifyPassword() without shared
- * words — that's exactly the gap embeddings close in the next milestone.
- */
+/** Keyword scoring is kept separate so the benchmark can compare it with hybrid retrieval. */
 
 const STOPWORDS = new Set([
   "the",
@@ -81,6 +68,50 @@ export interface SearchOptions {
   expansionDepth?: number;
 }
 
+type RankedResult = SearchResult & { id?: number };
+
+function rankFunctions(
+  allFunctions: FunctionInfo[],
+  query: string,
+  queryEmbedding?: Float32Array,
+): RankedResult[] {
+  const queryTokens = tokenize(query);
+  return allFunctions
+    .map((fn) => {
+      const keywordScore = scoreFunction(queryTokens, fn);
+      const semanticScore =
+        queryEmbedding && fn.embedding
+          ? cosineSimilarity(queryEmbedding, fn.embedding)
+          : 0;
+      return {
+        id: fn.id,
+        name: fn.name,
+        filePath: fn.filePath,
+        startLine: fn.startLine,
+        endLine: fn.endLine,
+        className: fn.className,
+        score: queryEmbedding
+          ? 0.6 * semanticScore + 0.4 * keywordScore
+          : keywordScore,
+      };
+    })
+    .filter((result) => result.score > 0.1)
+    .sort((a, b) => b.score - a.score);
+}
+
+export function searchKeyword(
+  rootDir: string,
+  query: string,
+  topK = 5,
+): SearchResult[] {
+  const db = openDb(rootDir);
+  const allFunctions = getAllFunctions(db);
+  db.close();
+  return rankFunctions(allFunctions, query)
+    .slice(0, topK)
+    .map(({ id: _id, ...result }) => result);
+}
+
 export async function search(
   rootDir: string,
   query: string,
@@ -92,29 +123,8 @@ export async function search(
   const callEdges = options.expandDependencies ? getCallEdges(db) : [];
   db.close();
 
-  const queryTokens = tokenize(query);
   const queryEmbedding = await embedText(query);
-
-  const scored = allFunctions
-    .map((fn) => {
-      const keywordScore = scoreFunction(queryTokens, fn);
-      const semanticScore = fn.embedding
-        ? cosineSimilarity(queryEmbedding, fn.embedding)
-        : 0;
-      const finalScore = 0.6 * semanticScore + 0.4 * keywordScore;
-
-      return {
-        id: fn.id,
-        name: fn.name,
-        filePath: fn.filePath,
-        startLine: fn.startLine,
-        endLine: fn.endLine,
-        className: fn.className,
-        score: finalScore,
-      };
-    })
-    .filter((r) => r.score > 0.1)
-    .sort((a, b) => b.score - a.score);
+  const scored = rankFunctions(allFunctions, query, queryEmbedding);
 
   const matches = scored.slice(0, topK);
   if (!options.expandDependencies || matches.length === 0) {
@@ -122,12 +132,20 @@ export async function search(
   }
 
   const maxDepth = Math.max(1, Math.floor(options.expansionDepth ?? 1));
-  const byId = new Map(allFunctions.flatMap((fn) => fn.id === undefined ? [] : [[fn.id, fn]] as const));
+  const byId = new Map(
+    allFunctions.flatMap((fn) =>
+      fn.id === undefined ? [] : ([[fn.id, fn]] as const),
+    ),
+  );
   const outgoing = new Map<number, number[]>();
   const incoming = new Map<number, number[]>();
   for (const { callerId, calleeId } of callEdges) {
-    (outgoing.get(callerId) ?? outgoing.set(callerId, []).get(callerId)!).push(calleeId);
-    (incoming.get(calleeId) ?? incoming.set(calleeId, []).get(calleeId)!).push(callerId);
+    (outgoing.get(callerId) ?? outgoing.set(callerId, []).get(callerId)!).push(
+      calleeId,
+    );
+    (incoming.get(calleeId) ?? incoming.set(calleeId, []).get(calleeId)!).push(
+      callerId,
+    );
   }
 
   const resultById = new Map<number, SearchResult>();
@@ -143,8 +161,12 @@ export async function search(
     const { id, depth } = queue[index];
     if (depth >= maxDepth) continue;
     for (const [neighborId, relationship] of [
-      ...(outgoing.get(id) ?? []).map((calleeId) => [calleeId, "calls"] as const),
-      ...(incoming.get(id) ?? []).map((callerId) => [callerId, "called-by"] as const),
+      ...(outgoing.get(id) ?? []).map(
+        (calleeId) => [calleeId, "calls"] as const,
+      ),
+      ...(incoming.get(id) ?? []).map(
+        (callerId) => [callerId, "called-by"] as const,
+      ),
     ]) {
       if (resultById.has(neighborId)) continue;
       const fn = byId.get(neighborId);
